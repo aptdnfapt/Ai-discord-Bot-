@@ -1,24 +1,63 @@
-# Discord ai bot for <topic> help
-1. a discord bot that i will use gemini api.
-2. have a system prompt that i can give give info about <topic>
-3. command prefix as $ and 3 commands . 
-   - ability to set a channel for the bot so every msg that is sent on that channel will be getting replied by the bot . $setchannel (also ability to set on multiple channel )
-   - ability to show uptime of the vps that its running on . so like if we ask $time . then it will show the uptime in hour and minutes 
-   - $unsetchannel will unset it from the channel it suppose to talk to for all msgs . 
+# Discord AI Bot with Gemini API
 
+This document outlines the features of a Discord bot powered by the Gemini API.
 
-4. key word calling . so the bot will look for "keywords" on every channel it has acesss to  and if it finds any user msg with those key words it will send a counter reply on that msg containing the keyword . so lets say the keyword is bot,ai or assistant . then if someone says ai hello. or anything that contains the word ai , the bot should reply on the channel containing that msg from user even if the channel is not set as set channle 
+## Core Idea
+A versatile Discord bot that leverages the Gemini API for intelligent responses. It can be configured for specific topics via a system prompt and interacts through dedicated channels or keyword triggers.
 
+## Current Implemented Features:
 
---- so if you got far ? there is 2 way the bot can reply one is containing its keywords and one is setchnnel 
+1.  **Gemini API Integration:**
+    *   The bot utilizes Google's Gemini API for generating AI responses.
+    *   API Key and Model Name (`GEMINI_MODEL_NAME`) are configurable via the `.env` file.
 
+2.  **System Prompt & Persona:**
+    *   A `SYSTEM_PROMPT` can be set in the `.env` file to define the bot's base persona, expertise, or topic focus.
 
+3.  **Configurable Command Prefix:**
+    *   The `COMMAND_PREFIX` (e.g., `$`, `!!`) is configurable in the `.env` file.
 
-5. context awarness even after vps reboot so use a json to log the past msgs on the same dir as bot.py and store chat history so that ai dont forget past chats. make a systme to auto delete old history on the go so it doesnt over exids the ais context . 
+4.  **Dual Interaction Modes:**
+    *   **Set Channels (`$setchannel`, `$unsetchannel`):**
+        *   Ability to designate specific channels where the bot responds to every message.
+        *   Supports multiple set channels per server.
+        *   Maintains a shared conversation history (`main_chat_history`) for these channels within each server.
+    *   **Keyword-Based Replies:**
+        *   The bot monitors messages in all accessible channels (unless ignored) for `BOT_KEYWORDS` (configurable in `.env`).
+        *   Replies to messages containing these keywords, using user-specific conversation history (`rolling_history`).
+        *   The `$ignore` and `$unignore` commands allow per-channel control over keyword detection.
 
+5.  **Customizable AI Contexts:**
+    *   The bot can load custom system prompts from `.txt` files located in a configurable `CONTEXT_DIR` (default: `context/`).
+    *   The `$setcontext <context_name>` command allows setting a specific loaded context for a channel. This context will override the default `SYSTEM_PROMPT` for all AI interactions in that channel.
+    *   The `$unsetcontext` command removes the custom context, reverting to the default `SYSTEM_PROMPT`.
+    *   Contexts are stored persistently in `bot_data.json` on a per-channel basis (`channel_active_contexts`).
 
-6. also store the channel id to the json so it doesnt forget the setchannels 
+6.  **Context Awareness & Persistence:**
+    *   Conversation history and settings are stored in `bot_data.json` to persist across restarts.
+    *   **History Management:**
+        *   User-specific `rolling_history` (for keyword replies) is maintained using a FIFO (First-In, First-Out) mechanism, keeping approximately the last 100 entries (50 user/bot message pairs).
+        *   Server-wide `main_chat_history` (for set channels) also uses FIFO, keeping approximately the last 200 entries (100 user/bot message pairs).
+    *   Set channel IDs, ignored channel IDs, and active channel contexts are stored persistently.
 
+7.  **Utility Commands:**
+    *   `$time`: Shows the system uptime of the VPS/machine hosting the bot.
+    *   `$help`: A custom help command listing available commands.
 
+8.  **Rate Limiting:**
+    *   A universal rate limit applies to all AI prompt generations (both keyword and set channel interactions) per user.
+    *   `RATE_LIMIT_MAX_PROMPTS` and `RATE_LIMIT_SECONDS` are configurable in the `.env` file.
+    *   The bot notifies users when they are rate-limited.
 
-7. keyywords api and system prompt ,days before delete msgs from json ,  will be store on a .env file on same dir as the bot.py file ,  . 
+9.  **Configuration via `.env`:**
+    *   `DISCORD_TOKEN`, `GEMINI_API_KEY`, `COMMAND_PREFIX`
+    *   `BOT_KEYWORDS`, `GEMINI_MODEL_NAME`, `SYSTEM_PROMPT`
+    *   `CONTEXT_DIR`
+    *   `RATE_LIMIT_MAX_PROMPTS`, `RATE_LIMIT_SECONDS`
+
+## Future Enhancements (Planned):
+
+1.  **Automatic User Profile Summary Generation:**
+    *   Implement logic to periodically use the Gemini API to summarize a user's `rolling_history`.
+    *   Store this summary in the `profile_summary` field within `user_specific_context` in `bot_data.json`.
+    *   This summary will then be used to provide more personalized and long-term context for keyword-triggered replies.

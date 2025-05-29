@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 import subprocess
 import time
 import logging
-import google.generativeai as genai # Ensure this import is active
+import google.generativeai as genai
+import glob # Import glob for file listing
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,6 +22,7 @@ COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "$") # Default to '$' if not set
 BOT_KEYWORDS_STR = os.getenv("BOT_KEYWORDS", "ai,bot,assistant")
 GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-pro") # Default to gemini-pro
 DEFAULT_SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a helpful AI assistant.")
+CONTEXT_DIR = os.getenv("CONTEXT_DIR", "context") # New: Directory for context files
 
 # New environment variables for Rate Limiting
 RATE_LIMIT_MAX_PROMPTS = int(os.getenv("RATE_LIMIT_MAX_PROMPTS", 3)) # Default to 3 prompts
@@ -30,8 +32,6 @@ RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", 8))     # Default to 8 
 KEYWORDS = [keyword.strip().lower() for keyword in BOT_KEYWORDS_STR.split(',')]
 
 # Initialize Discord Bot with intents
-# It's crucial to enable necessary intents for your bot to receive events.
-# discord.Intents.all() is broad; consider using more specific intents for production.
 intents = discord.Intents.default()
 intents.message_content = True # Required to read message content
 intents.members = True # Required for on_member_join, etc., if you add those features
@@ -58,6 +58,7 @@ else:
 DATA_FILE = "bot_data.json"
 bot_data = {} # This will hold the loaded data
 user_prompt_timestamps = {} # Transient state for rate limiting, renamed from keyword_trigger_timestamps
+loaded_contexts = {} # New: Stores loaded system prompts from context files
 
 # --- Helper functions for data persistence ---
 def load_data():
@@ -94,7 +95,8 @@ def ensure_server_data(server_id_str):
             "set_channels": [],
             "main_chat_history": [],
             "ignored_channels_for_keywords": [],
-            "user_specific_context": {}
+            "user_specific_context": {},
+            "channel_active_contexts": {} # New: To store active context for channels
         }
         logging.info(f"Initialized data structure for server: {server_id_str}")
         save_data(bot_data) # Save immediately after creating new server entry
@@ -109,6 +111,32 @@ def ensure_user_data(server_id_str, user_id_str):
         }
         logging.info(f"Initialized user context for user: {user_id_str} in server: {server_id_str}")
         save_data(bot_data) # Save immediately after creating new user entry
+
+# --- Context Loading Function ---
+def load_contexts():
+    """Loads system prompts from text files in the CONTEXT_DIR."""
+    global loaded_contexts
+    loaded_contexts = {} # Clear existing contexts
+    if not os.path.exists(CONTEXT_DIR):
+        logging.warning(f"Context directory '{CONTEXT_DIR}' not found. No custom contexts will be loaded.")
+        return
+
+    for filepath in glob.glob(os.path.join(CONTEXT_DIR, "*.txt")):
+        filename = os.path.basename(filepath)
+        context_name = os.path.splitext(filename)[0].lower() # Use filename without extension as context name
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                loaded_contexts[context_name] = content
+                logging.info(f"Loaded context: '{context_name}' from '{filename}'")
+        except Exception as e:
+            logging.error(f"Error loading context file '{filename}': {e}")
+    
+    if not loaded_contexts:
+        logging.info(f"No context files found in '{CONTEXT_DIR}'.")
+    else:
+        logging.info(f"Available contexts: {', '.join(loaded_contexts.keys())}")
+
 
 # --- Centralized Rate Limiting Function ---
 def check_and_update_rate_limit(user_id: str, server_id: str) -> bool:
@@ -135,28 +163,42 @@ def check_and_update_rate_limit(user_id: str, server_id: str) -> bool:
     user_prompt_timestamps[server_id][user_id] = user_timestamps
     return True # Not rate limited, prompt can proceed
 
-# --- Placeholder for Gemini API Interaction ---
-async def get_gemini_response(prompt_history, current_message_content, system_prompt_override=None):
+# --- Gemini API Interaction ---
+async def get_gemini_response(prompt_history, current_message_content, system_prompt_base, profile_summary_text=""):
     """
     Interacts with the Gemini API.
-    Uses DEFAULT_SYSTEM_PROMPT unless a system_prompt_override is provided.
+    Combines system_prompt_base and profile_summary_text for the AI's context.
     """
     if not model: # Check if the global 'model' object was successfully initialized
         logging.warning("Gemini model not available. Returning placeholder.")
         return "My AI capabilities are currently disabled (model not loaded)."
 
-    # Determine the system prompt to use
-    active_system_prompt = system_prompt_override if system_prompt_override else DEFAULT_SYSTEM_PROMPT
+    # Construct the final system prompt
+    final_system_prompt = system_prompt_base
+    if profile_summary_text:
+        final_system_prompt += f"\n\nUser profile context: {profile_summary_text}"
     
-    # The 'active_system_prompt' is conceptually used. For some Gemini models/setups,
-    # system instructions are part of the model configuration or the initial turns of history.
-    # For `start_chat`, the history is primary. We'll log the conceptual prompt.
-    logging.info(f"Conceptual system context for Gemini: '{active_system_prompt}'")
+    logging.info(f"Final system context for Gemini: '{final_system_prompt}'")
     logging.debug(f"Sending to Gemini - History: {prompt_history}, Current: {current_message_content}")
 
     try:
-        # Ensure the model object from global scope is used
-        chat_session = model.start_chat(history=prompt_history) # prompt_history should be correctly formatted
+        # For Gemini, the system instruction is often the first turn in the history,
+        # or set during model initialization for some models.
+        # For `start_chat`, we prepend it to the history if it's not already there.
+        # Gemini's `start_chat` expects history to be a list of `{"role": "user/model", "parts": [{"text": "..."}]}`
+        
+        # Create a temporary history including the system prompt as the first user turn
+        # This is a common way to pass system instructions to chat models if not directly supported
+        # by a dedicated parameter.
+        temp_history = []
+        if final_system_prompt:
+            temp_history.append({"role": "user", "parts": [{"text": final_system_prompt}]})
+            temp_history.append({"role": "model", "parts": [{"text": "Okay, I understand."}]}) # Bot acknowledges system prompt
+        
+        # Append the actual conversation history
+        temp_history.extend(prompt_history)
+
+        chat_session = model.start_chat(history=temp_history)
         response = await chat_session.send_message_async(current_message_content)
         
         if response and response.text:
@@ -171,9 +213,6 @@ async def get_gemini_response(prompt_history, current_message_content, system_pr
             return "I received that, but I don't have a specific response right now."
     except Exception as e:
         logging.error(f"Gemini API error: {e}")
-        # from google.generativeai.types import BlockedPromptException # Specific exception for safety
-        # if isinstance(e, BlockedPromptException):
-        #    return "My safety filters prevented me from responding to that. Please try rephrasing."
         return "Oops! I encountered an error trying to process that with my AI. Please try again later."
 
 # --- Bot Events ---
@@ -184,12 +223,16 @@ async def on_ready():
     if bot.user and bot.user.name.lower() not in KEYWORDS:
         KEYWORDS.append(bot.user.name.lower())
     
+    load_contexts() # New: Load contexts on startup
+
     logging.info(f'{bot.user} has connected to Discord!')
     logging.info(f'Command Prefix: {COMMAND_PREFIX}')
     logging.info(f'Keywords: {KEYWORDS}') # Log the finalized keywords
     logging.info(f'Gemini Model: {GEMINI_MODEL_NAME if model else "Not loaded/configured"}')
     logging.info(f'Default System Prompt: "{DEFAULT_SYSTEM_PROMPT}"')
     logging.info(f'AI Rate Limit: {RATE_LIMIT_MAX_PROMPTS} prompts per {RATE_LIMIT_SECONDS} seconds per user.')
+    logging.info(f'Context Directory: {CONTEXT_DIR}')
+    logging.info(f'Available Contexts: {", ".join(loaded_contexts.keys()) if loaded_contexts else "None"}')
     
     print(f'{bot.user} has connected to Discord!')
     print(f'Command Prefix: {COMMAND_PREFIX}')
@@ -208,7 +251,7 @@ async def on_message(message):
         return
 
     server_id = str(message.guild.id)
-    channel_id = message.channel.id
+    channel_id = str(message.channel.id) # Convert to string for dictionary keys
     user_id = str(message.author.id)
     message_content = message.content.lower()
 
@@ -218,18 +261,21 @@ async def on_message(message):
 
     # --- Command Processing ---
     # Let the commands.Bot handle commands first.
-    # If a message is a command, process_commands will handle it,
-    # and we should return to prevent further processing as a regular message.
     if message.content.startswith(COMMAND_PREFIX):
         await bot.process_commands(message)
         return # Command handled, stop further processing
+
+    # --- Determine the base system prompt for this interaction ---
+    # Check if a specific context is set for this channel
+    channel_context_name = bot_data[server_id]["channel_active_contexts"].get(channel_id)
+    system_prompt_base_for_gemini = loaded_contexts.get(channel_context_name, DEFAULT_SYSTEM_PROMPT)
 
     # --- Keyword Detection Logic ---
     ignored_channels = bot_data[server_id]["ignored_channels_for_keywords"]
 
     is_keyword_triggered = any(keyword in message_content for keyword in KEYWORDS)
 
-    if is_keyword_triggered and channel_id not in ignored_channels:
+    if is_keyword_triggered and int(channel_id) not in ignored_channels: # Convert channel_id back to int for 'ignored_channels' list
         # Apply Rate Limiting for Keyword Triggers
         if not check_and_update_rate_limit(user_id, server_id):
             await message.channel.send(f"{message.author.mention}, you're asking for AI responses a bit too quickly! Please wait a moment.")
@@ -240,32 +286,19 @@ async def on_message(message):
         rolling_history = user_context["rolling_history"]
         profile_summary = user_context["profile_summary"]
 
-        # Construct prompt for Gemini (adjust format for actual Gemini API)
-        # For Gemini, history is a list of {"role": "user/model", "parts": ["text"]}
+        # Construct prompt for Gemini
         gemini_history = rolling_history # Assuming rolling_history is already in Gemini format
         
-        # Use DEFAULT_SYSTEM_PROMPT, potentially augmented by profile_summary for keyword interactions
-        keyword_system_prompt_override = DEFAULT_SYSTEM_PROMPT
-        if profile_summary: # Augment if profile summary exists
-             keyword_system_prompt_override += f"\n\nUser profile context: {profile_summary}"
-
         try:
-            # Pass the potentially augmented system prompt to get_gemini_response
-            response_text = await get_gemini_response(gemini_history, message.content, system_prompt_override=keyword_system_prompt_override)
+            response_text = await get_gemini_response(gemini_history, message.content, system_prompt_base_for_gemini, profile_summary)
             await message.channel.send(response_text)
 
             # Update rolling history (FIFO)
-            rolling_history.append({"role": "user", "parts": [message.content]})
-            rolling_history.append({"role": "model", "parts": [response_text]})
-            if len(rolling_history) > 100: # Keep last 100 entries
+            rolling_history.append({"role": "user", "parts": [{"text": message.content}]})
+            rolling_history.append({"role": "model", "parts": [{"text": response_text}]})
+            if len(rolling_history) > 100: # Keep last 100 entries (50 user/bot pairs)
                 rolling_history.pop(0)
-                rolling_history.pop(0) # Remove both user and model parts
-
-            # Profile Summary Update (Advanced - periodic summarization)
-            # if len(rolling_history) % 50 == 0 and len(rolling_history) > 0:
-            #     # Trigger a summarization of recent history and update profile_summary
-            #     # This would involve another Gemini call
-            #     pass
+                rolling_history.pop(0)
 
             save_data(bot_data)
             logging.info(f"Keyword triggered response sent in channel {channel_id} for user {user_id}.")
@@ -276,7 +309,7 @@ async def on_message(message):
 
     # --- Set Channel Interaction Logic ---
     set_channels = bot_data[server_id]["set_channels"]
-    if channel_id in set_channels:
+    if int(channel_id) in set_channels: # Convert channel_id back to int for 'set_channels' list
         # Apply Rate Limiting for Set Channel Triggers
         if not check_and_update_rate_limit(user_id, server_id):
             await message.channel.send(f"{message.author.mention}, you're sending messages too quickly in this AI channel! Please wait a moment.")
@@ -285,21 +318,17 @@ async def on_message(message):
         # Process with Gemini for set channel (main chat history)
         main_chat_history = bot_data[server_id]["main_chat_history"]
 
-        # Construct prompt for Gemini (adjust format for actual Gemini API)
+        # Construct prompt for Gemini
         gemini_history = main_chat_history # Assuming main_chat_history is already in Gemini format
-
-        # Use DEFAULT_SYSTEM_PROMPT for set channel interactions.
-        # No specific override needed here unless a different persona is desired for set_channels.
-        # get_gemini_response will use DEFAULT_SYSTEM_PROMPT if system_prompt_override is None.
         
         try:
-            response_text = await get_gemini_response(gemini_history, message.content) # No override, uses DEFAULT_SYSTEM_PROMPT
+            response_text = await get_gemini_response(gemini_history, message.content, system_prompt_base_for_gemini, "") # No profile summary for set channels
             await message.channel.send(response_text)
 
             # Update main chat history (FIFO)
-            main_chat_history.append({"role": "user", "parts": [message.content]})
-            main_chat_history.append({"role": "model", "parts": [response_text]})
-            if len(main_chat_history) > 200: # Keep last 200 entries for main chat
+            main_chat_history.append({"role": "user", "parts": [{"text": message.content}]})
+            main_chat_history.append({"role": "model", "parts": [{"text": response_text}]})
+            if len(main_chat_history) > 200: # Keep last 200 entries (100 user/bot pairs)
                 main_chat_history.pop(0)
                 main_chat_history.pop(0)
 
@@ -374,6 +403,41 @@ async def unignore_cmd(ctx):
     else:
         await ctx.send(f"Keyword replies were not ignored in this channel ({ctx.channel.mention}).")
 
+@bot.command(name="setcontext", help=f"Sets a specific AI context for this channel. Use: {COMMAND_PREFIX}setcontext <context_name>")
+async def set_context_cmd(ctx, context_name: str):
+    """Sets a specific AI context (system prompt) for the current channel."""
+    server_id = str(ctx.guild.id)
+    channel_id = str(ctx.channel.id)
+    context_name_lower = context_name.lower()
+
+    ensure_server_data(server_id)
+
+    if context_name_lower in loaded_contexts:
+        bot_data[server_id]["channel_active_contexts"][channel_id] = context_name_lower
+        save_data(bot_data)
+        await ctx.send(f"AI context for this channel ({ctx.channel.mention}) set to: `{context_name_lower}`.")
+        logging.info(f"Channel {channel_id} context set to '{context_name_lower}' in server {server_id}.")
+    else:
+        available_contexts = ", ".join(loaded_contexts.keys()) if loaded_contexts else "None"
+        await ctx.send(f"Context `{context_name}` not found. Available contexts: {available_contexts}")
+        logging.warning(f"Attempted to set unknown context '{context_name}' for channel {channel_id}.")
+
+@bot.command(name="unsetcontext", help=f"Removes the custom AI context for this channel. Use: {COMMAND_PREFIX}unsetcontext")
+async def unset_context_cmd(ctx):
+    """Removes the custom AI context for the current channel, reverting to default."""
+    server_id = str(ctx.guild.id)
+    channel_id = str(ctx.channel.id)
+
+    ensure_server_data(server_id)
+
+    if channel_id in bot_data[server_id]["channel_active_contexts"]:
+        del bot_data[server_id]["channel_active_contexts"][channel_id]
+        save_data(bot_data)
+        await ctx.send(f"Custom AI context for this channel ({ctx.channel.mention}) has been removed. Reverting to default.")
+        logging.info(f"Channel {channel_id} context unset in server {server_id}.")
+    else:
+        await ctx.send(f"This channel ({ctx.channel.mention}) does not have a custom AI context set.")
+
 @bot.command(name="time", help=f"Shows the system uptime. Use: {COMMAND_PREFIX}time")
 async def time_cmd(ctx):
     """Shows the system uptime using the 'uptime' command."""
@@ -402,6 +466,8 @@ async def help_cmd(ctx):
 - `{COMMAND_PREFIX}unsetchannel`: Unsets the current channel from continuous conversation.
 - `{COMMAND_PREFIX}ignore`: Disables keyword-triggered replies in this channel.
 - `{COMMAND_PREFIX}unignore`: Enables keyword-triggered replies in this channel.
+- `{COMMAND_PREFIX}setcontext <context_name>`: Sets a specific AI context (persona/topic) for this channel. Contexts are loaded from the `{CONTEXT_DIR}` directory.
+- `{COMMAND_PREFIX}unsetcontext`: Removes the custom AI context for this channel, reverting to the default.
 - `{COMMAND_PREFIX}time`: Shows the system uptime.
 
 *Note: If a channel is set for continuous conversation, I will respond to every message.

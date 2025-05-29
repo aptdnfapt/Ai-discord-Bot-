@@ -9,12 +9,14 @@ This is a Python-based Discord bot that uses Google's Gemini API to provide AI-p
 *   **Contextual Conversations:**
     *   **Set Channels:** Designate specific channels where the bot will respond to every message, maintaining a conversation history for that channel.
     *   **Keyword Replies:** Responds to messages containing specific keywords (e.g., "ai", "bot", its own name) in any channel (unless ignored), using user-specific conversation history.
+*   **Customizable AI Contexts:** Define specific personas or topic expertise for channels by placing `.txt` files in a `context/` directory.
 *   **Persistent Data:** Saves channel settings, conversation histories, and user contexts to a JSON file (`bot_data.json`).
 *   **Channel Management:**
     *   `setchannel`/`unsetchannel`: Manage channels for continuous conversation.
     *   `ignore`/`unignore`: Control where keyword-based replies are active.
+    *   `setcontext`/`unsetcontext`: Assign or remove a custom AI context for a channel.
 *   **Rate Limiting:** Prevents spamming AI responses (both keyword and set channel triggers) and warns users when they exceed limits. Configurable via `.env` file.
-*   **Customizable Persona:** Define the bot's core behavior and topic expertise via a system prompt in the `.env` file.
+*   **Customizable Persona:** Define the bot's core behavior and topic expertise via a system prompt in the `.env` file, or through custom context files.
 *   **Utility Commands:** Includes `help` and `time` (system uptime).
 
 ## Prerequisites
@@ -57,6 +59,7 @@ This is a Python-based Discord bot that uses Google's Gemini API to provide AI-p
     BOT_KEYWORDS=ai,bot,assistant,your_bot_name # Comma-separated list of keywords
     GEMINI_MODEL_NAME=gemini-1.5-flash          # e.g., gemini-pro, gemini-1.0-pro, gemini-1.5-flash
     SYSTEM_PROMPT="You are a helpful AI assistant. Your primary topic is general knowledge but you adapt based on context."
+    CONTEXT_DIR=context                         # Directory containing .txt files for custom AI contexts/personas
 
     # Rate Limiting for AI Responses
     RATE_LIMIT_MAX_PROMPTS=3 # Max number of AI prompts allowed within the time window per user
@@ -68,11 +71,25 @@ This is a Python-based Discord bot that uses Google's Gemini API to provide AI-p
     *   **`COMMAND_PREFIX`**: The prefix for bot commands (e.g., `$`, `!`, `!!`).
     *   **`BOT_KEYWORDS`**: Comma-separated list of words that will trigger the bot in non-set channels. The bot's actual name will also be added to this list automatically when it starts.
     *   **`GEMINI_MODEL_NAME`**: The specific Gemini model you want to use (e.g., `gemini-pro`, `gemini-1.5-flash`).
-    *   **`SYSTEM_PROMPT`**: The initial instruction given to the AI to define its persona and general behavior.
+    *   **`SYSTEM_PROMPT`**: The initial instruction given to the AI to define its persona and general behavior. This is used if no specific context is set for a channel.
+    *   **`CONTEXT_DIR`**: The directory where custom AI context `.txt` files are stored. Defaults to `context`.
     *   **`RATE_LIMIT_MAX_PROMPTS`**: The maximum number of AI prompts a user is allowed to make within the `RATE_LIMIT_SECONDS` window. Defaults to `3` if not set.
     *   **`RATE_LIMIT_SECONDS`**: The time window in seconds for the rate limit. Defaults to `8` if not set.
 
-5.  **Run the Bot:**
+5.  **Create the `context/` directory and add context files (Optional but Recommended):**
+    Create a folder named `context` (or whatever you set `CONTEXT_DIR` to) in the root directory of your project. Inside this folder, you can create `.txt` files, where each file contains a system prompt for a specific AI persona or topic. The filename (without the `.txt` extension) will be the `context_name` you use with the `setcontext` command.
+
+    Example:
+    `context/general.txt`
+    ```
+    You are a helpful AI assistant. Your primary topic is general knowledge but you adapt based on context.
+    ```
+    `context/tech_support.txt`
+    ```
+    You are a friendly and knowledgeable tech support assistant. Focus on providing clear, step-by-step solutions to common technical issues. Ask clarifying questions if needed.
+    ```
+
+6.  **Run the Bot:**
     ```bash
     python bot.py
     ```
@@ -84,6 +101,7 @@ This is a Python-based Discord bot that uses Google's Gemini API to provide AI-p
 
 *   **Set Channels:** If you use the `{COMMAND_PREFIX}setchannel` command in a channel, the bot will respond to *every* message sent in that channel. It maintains a shared conversation history for this channel.
 *   **Keyword Replies:** In any other channel (that is not explicitly ignored using `{COMMAND_PREFIX}ignore`), the bot will listen for messages containing any of the defined `BOT_KEYWORDS` (or its own name). If a keyword is detected, it will generate a response using a conversation history specific to the user who triggered it.
+*   **Custom AI Contexts:** You can set a specific AI context for a channel using `{COMMAND_PREFIX}setcontext <context_name>`. This context will override the default `SYSTEM_PROMPT` from the `.env` file for all AI interactions in that channel (both set-channel and keyword-based replies).
 *   **Rate Limit Notifications:** If a user triggers AI responses too frequently (either via keywords or in a set channel), they will be temporarily rate-limited and notified by the bot.
 *   **Commands:** Messages starting with the `COMMAND_PREFIX` are treated as commands.
 
@@ -110,13 +128,21 @@ This is a Python-based Discord bot that uses Google's Gemini API to provide AI-p
     *   Enables keyword-triggered replies in the current channel (if they were previously disabled).
     *   Usage: `{COMMAND_PREFIX}unignore`
 
+*   **`{COMMAND_PREFIX}setcontext <context_name>`**:
+    *   Sets a specific AI context (persona/topic) for the current channel. The `context_name` must match the filename (without `.txt`) of a file in your `context/` directory. This context will apply to all AI interactions in this channel.
+    *   Usage: `{COMMAND_PREFIX}setcontext tech_support`
+
+*   **`{COMMAND_PREFIX}unsetcontext`**:
+    *   Removes any custom AI context set for the current channel, reverting AI responses in this channel to use the `SYSTEM_PROMPT` defined in your `.env` file.
+    *   Usage: `{COMMAND_PREFIX}unsetcontext`
+
 *   **`{COMMAND_PREFIX}time`**:
     *   Shows the system uptime of the server where the bot is hosted.
     *   Usage: `{COMMAND_PREFIX}time`
 
 ## Data Storage
 
-*   The bot stores its configuration (set channels, ignored channels) and conversation histories in a file named `bot_data.json`.
+*   The bot stores its configuration (set channels, ignored channels, active contexts) and conversation histories in a file named `bot_data.json`.
 *   This file is created automatically if it doesn't exist.
 *   User-specific conversation history for keyword replies is stored under `user_specific_context`.
 *   Channel-specific conversation history for "set channels" is stored under `main_chat_history`.
@@ -131,6 +157,7 @@ This is a Python-based Discord bot that uses Google's Gemini API to provide AI-p
     *   Ensure the bot has the necessary permissions in your Discord server (Read Messages, Send Messages, View Channels).
     *   Verify the `COMMAND_PREFIX` and `BOT_KEYWORDS` in your `.env` file.
 *   **Permissions Error for `uptime` command**: The system running the bot might not have the `uptime` command available or accessible.
+*   **Context not loading/found**: Ensure your `CONTEXT_DIR` in `.env` is correct and that `.txt` files are placed directly inside it. Check bot logs for "Error loading context file" messages.
 
 ## Contributing
 
