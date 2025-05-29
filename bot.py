@@ -89,28 +89,75 @@ bot_data = load_data()
 
 # --- Helper functions for data structure management ---
 def ensure_server_data(server_id_str):
-    """Ensures the server's data structure exists in bot_data."""
+    """Ensures the server's data structure exists in bot_data and has all necessary keys."""
+    modified = False
     if server_id_str not in bot_data:
         bot_data[server_id_str] = {
             "set_channels": [],
             "main_chat_history": [],
             "ignored_channels_for_keywords": [],
             "user_specific_context": {},
-            "channel_active_contexts": {} # New: To store active context for channels
+            "channel_active_contexts": {}
         }
-        logging.info(f"Initialized data structure for server: {server_id_str}")
-        save_data(bot_data) # Save immediately after creating new server entry
+        logging.info(f"Initialized new data structure for server: {server_id_str}")
+        modified = True
+    else:
+        # Check and add missing keys for existing server entries
+        server_entry = bot_data[server_id_str]
+        keys_added = []
+        if "set_channels" not in server_entry:
+            server_entry["set_channels"] = []
+            keys_added.append("set_channels")
+        if "main_chat_history" not in server_entry:
+            server_entry["main_chat_history"] = []
+            keys_added.append("main_chat_history")
+        if "ignored_channels_for_keywords" not in server_entry:
+            server_entry["ignored_channels_for_keywords"] = []
+            keys_added.append("ignored_channels_for_keywords")
+        if "user_specific_context" not in server_entry:
+            server_entry["user_specific_context"] = {}
+            keys_added.append("user_specific_context")
+        if "channel_active_contexts" not in server_entry: # This is the key causing the error
+            server_entry["channel_active_contexts"] = {}
+            keys_added.append("channel_active_contexts")
+        
+        if keys_added:
+            logging.info(f"Added missing key(s) {', '.join(keys_added)} to server: {server_id_str}")
+            modified = True
+            
+    if modified:
+        save_data(bot_data)
 
 def ensure_user_data(server_id_str, user_id_str):
-    """Ensures the user's data structure exists within a server's data."""
-    ensure_server_data(server_id_str) # Ensure server data exists first
-    if user_id_str not in bot_data[server_id_str]["user_specific_context"]:
-        bot_data[server_id_str]["user_specific_context"][user_id_str] = {
+    """Ensures the user's data structure exists and has all necessary keys."""
+    ensure_server_data(server_id_str) # This will ensure bot_data[server_id_str]["user_specific_context"] exists
+
+    user_contexts = bot_data[server_id_str]["user_specific_context"]
+    modified = False
+
+    if user_id_str not in user_contexts:
+        user_contexts[user_id_str] = {
             "rolling_history": [],
             "profile_summary": ""
         }
-        logging.info(f"Initialized user context for user: {user_id_str} in server: {server_id_str}")
-        save_data(bot_data) # Save immediately after creating new user entry
+        logging.info(f"Initialized new user context for user: {user_id_str} in server: {server_id_str}")
+        modified = True
+    else:
+        user_entry = user_contexts[user_id_str]
+        keys_added = []
+        if "rolling_history" not in user_entry:
+            user_entry["rolling_history"] = []
+            keys_added.append("rolling_history")
+        if "profile_summary" not in user_entry:
+            user_entry["profile_summary"] = ""
+            keys_added.append("profile_summary")
+        
+        if keys_added:
+            logging.info(f"Added missing key(s) {', '.join(keys_added)} for user: {user_id_str} in server: {server_id_str}")
+            modified = True
+            
+    if modified:
+        save_data(bot_data)
 
 # --- Context Loading Function ---
 def load_contexts():
@@ -178,7 +225,7 @@ async def get_gemini_response(prompt_history, current_message_content, system_pr
     if profile_summary_text:
         final_system_prompt += f"\n\nUser profile context: {profile_summary_text}"
     
-    logging.info(f"Final system context for Gemini: '{final_system_prompt}'")
+    logging.debug(f"Final system context for Gemini: '{final_system_prompt}'") # Changed to debug
     logging.debug(f"Sending to Gemini - History: {prompt_history}, Current: {current_message_content}")
 
     try:
@@ -232,7 +279,8 @@ async def on_ready():
     logging.info(f'Default System Prompt: "{DEFAULT_SYSTEM_PROMPT}"')
     logging.info(f'AI Rate Limit: {RATE_LIMIT_MAX_PROMPTS} prompts per {RATE_LIMIT_SECONDS} seconds per user.')
     logging.info(f'Context Directory: {CONTEXT_DIR}')
-    logging.info(f'Available Contexts: {", ".join(loaded_contexts.keys()) if loaded_contexts else "None"}')
+    # Fix: Changed outer f-string quotes to double quotes to allow single quotes inside
+    logging.info(f"Available Contexts: {', '.join(loaded_contexts.keys()) if loaded_contexts else 'None'}")
     
     print(f'{bot.user} has connected to Discord!')
     print(f'Command Prefix: {COMMAND_PREFIX}')
